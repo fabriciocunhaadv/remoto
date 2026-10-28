@@ -170,6 +170,7 @@ async function connect(join) {
     video.srcObject = e.streams[0] || new MediaStream([e.track]);
     $("#login").style.display = "none";
     video.style.display = "block";
+    video.play().catch(() => info("Clique na tela para iniciar o vídeo"));
     $("#bye").style.display = "block";
     video.focus();
   };
@@ -189,8 +190,19 @@ async function connect(join) {
       info("Conectado. Aguardando a imagem...");
       setTimeout(() => {
         if (thisPc !== pc) return;
-        if (video.videoWidth > 0) info("");
-        else info("Conectado, mas sem imagem. Verifique se o computador do cliente está ligado, desbloqueado e com a tela ativa.");
+        if (video.videoWidth > 0) return info("");
+        pc.getStats().then(stats => {
+          let pk = 0, dec = 0, codec = "?";
+          const codecs = {};
+          stats.forEach(s => { if (s.type === "codec") codecs[s.id] = s.mimeType; });
+          stats.forEach(s => {
+            if (s.type === "inbound-rtp" && s.kind === "video") {
+              pk = s.packetsReceived || 0; dec = s.framesDecoded || 0; codec = codecs[s.codecId] || "?";
+            }
+          });
+          info(`Conectado, mas sem imagem. Pacotes recebidos: ${pk} · quadros decodificados: ${dec} · codec: ${codec}. ` +
+               `Navegador: ${navigator.userAgent.match(/(Chrome|Firefox|Safari|Edg)\/[\d.]+/g)?.slice(-1)[0] || "?"}`);
+        });
       }, 6000);
     }
     else if (st === "disconnected") info("Conexão instável...");
@@ -224,6 +236,7 @@ function norm(e) {
   const y = (e.clientY - r.top - (r.height - h) / 2) / h;
   return {x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y))};
 }
+video.addEventListener("click", () => video.paused && video.play());
 const send = o => dc && dc.readyState === "open" && dc.send(JSON.stringify(o));
 let lastMove = 0;
 video.addEventListener("mousemove", e => {
