@@ -3,7 +3,7 @@ import json
 import sys
 from pathlib import Path
 
-DEFAULT = "https://remoto.seudominio.com"  # troque pelo endereço do seu servidor
+DEFAULT = "https://remoto.assessor.net.br"
 
 
 def server_url():
