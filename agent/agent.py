@@ -2,7 +2,6 @@
 Captura a tela, envia por WebRTC e executa mouse/teclado recebidos."""
 import argparse
 import asyncio
-import fractions
 import json
 import secrets
 import time
@@ -11,16 +10,20 @@ import aiohttp
 import mss
 import numpy as np
 import pyautogui
+from concurrent.futures import ThreadPoolExecutor
+
 from aiortc import (RTCConfiguration, RTCIceServer, RTCPeerConnection,
                     RTCSessionDescription, VideoStreamTrack)
-from aiortc.sdp import candidate_from_sdp
+from aiortc.codecs import h264, vpx
 from av import VideoFrame
-from PIL import Image
 
 pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0
-FPS = 15
 MAX_WIDTH = 1600
+
+# A aiortc começa em 0,5 Mbps e limita em 1,5 Mbps (VP8): pouco para tela.
+vpx.DEFAULT_BITRATE, vpx.MIN_BITRATE, vpx.MAX_BITRATE = 3_000_000, 1_000_000, 8_000_000
+h264.DEFAULT_BITRATE, h264.MIN_BITRATE, h264.MAX_BITRATE = 3_000_000, 1_000_000, 8_000_000
 
 KEYMAP = {
     "Enter": "enter", "Backspace": "backspace", "Tab": "tab", "Escape": "esc",
@@ -34,17 +37,26 @@ KEYMAP = {
 class ScreenTrack(VideoStreamTrack):
     def __init__(self):
         super().__init__()
-        self.sct = mss.mss()
-        self.monitor = self.sct.monitors[1]
+        with mss.mss() as sct:
+            self.monitor = sct.monitors[1]
+        w, h = self.monitor["width"], self.monitor["height"]
+        scale = min(1, MAX_WIDTH / w)
+        self.out_size = (int(w * scale) // 2 * 2, int(h * scale) // 2 * 2)
+        # captura e conversão rodam numa thread própria (a mss exige a mesma thread)
+        self.pool = ThreadPoolExecutor(max_workers=1)
+        self.sct = None
+
+    def _grab(self):
+        if self.sct is None:
+            self.sct = mss.mss()
+        shot = self.sct.grab(self.monitor)
+        arr = np.frombuffer(shot.bgra, dtype=np.uint8).reshape(shot.height, shot.width, 4)
+        frame = VideoFrame.from_ndarray(arr, format="bgra")
+        return frame.reformat(width=self.out_size[0], height=self.out_size[1], format="yuv420p")
 
     async def recv(self):
-        pts, time_base = await self.next_timestamp()
-        await asyncio.sleep(1 / FPS)
-        shot = self.sct.grab(self.monitor)
-        img = Image.frombuffer("RGB", shot.size, shot.bgra, "raw", "BGRX")
-        if img.width > MAX_WIDTH:
-            img = img.resize((MAX_WIDTH, int(img.height * MAX_WIDTH / img.width)))
-        frame = VideoFrame.from_ndarray(np.asarray(img), format="rgb24")
+        pts, time_base = await self.next_timestamp()  # já limita a ~30 fps
+        frame = await asyncio.get_running_loop().run_in_executor(self.pool, self._grab)
         frame.pts, frame.time_base = pts, time_base
         return frame
 
