@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RemoteDesk</title>
+<style>
+  body{margin:0;background:#111;color:#eee;font-family:system-ui,sans-serif}
+  #login{max-width:320px;margin:15vh auto;display:grid;gap:10px;padding:16px}
+  input,button{padding:10px;font-size:16px;border-radius:6px;border:0}
+  button{background:#2f7df6;color:#fff;cursor:pointer}
+  #err{color:#f66;min-height:1.2em}
+  #screen{display:none;width:100vw;height:100vh;object-fit:contain;background:#000;outline:none}
+</style>
+</head>
+<body>
+<div id="login">
+  <h2>RemoteDesk</h2>
+  <input id="id" placeholder="ID" inputmode="numeric">
+  <input id="pw" placeholder="Senha" type="password">
+  <button id="go">Conectar</button>
+  <div id="err"></div>
+</div>
+<video id="screen" autoplay playsinline muted tabindex="0"></video>
+<script>
+const $ = s => document.querySelector(s);
+const video = $("#screen");
+let dc;
+
+$("#go").onclick = async () => {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/viewer`);
+  const pc = new RTCPeerConnection({iceServers: [{urls: "stun:stun.l.google.com:19302"}]});
+  dc = pc.createDataChannel("input");
+  pc.addTransceiver("video", {direction: "recvonly"});
+  pc.ontrack = e => {
+    video.srcObject = e.streams[0] || new MediaStream([e.track]);
+    $("#login").style.display = "none";
+    video.style.display = "block";
+    video.focus();
+  };
+  ws.onopen = () => ws.send(JSON.stringify({type: "join", id: $("#id").value.trim(), password: $("#pw").value}));
+  ws.onmessage = async ev => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "denied") { $("#err").textContent = "O cliente recusou o acesso"; ws.close(); }
+    else if (m.type === "error") { $("#err").textContent = m.message; }
+    else if (m.type === "answer") { await pc.setRemoteDescription({type: "answer", sdp: m.sdp}); }
+  };
+  pc.onicegatheringstatechange = () => {
+    if (pc.iceGatheringState === "complete")
+      ws.send(JSON.stringify({type: "offer", sdp: pc.localDescription.sdp}));
+  };
+  await pc.setLocalDescription(await pc.createOffer());
+  ws.onclose = () => { video.style.display = "none"; $("#login").style.display = "grid"; };
+};
+
+// entrada: coordenadas normalizadas (0..1) relativas ao vídeo real, descontando as barras do object-fit
+function norm(e) {
+  const r = video.getBoundingClientRect(), vw = video.videoWidth, vh = video.videoHeight;
+  const scale = Math.min(r.width / vw, r.height / vh);
+  const w = vw * scale, h = vh * scale;
+  const x = (e.clientX - r.left - (r.width - w) / 2) / w;
+  const y = (e.clientY - r.top - (r.height - h) / 2) / h;
+  return {x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y))};
+}
+const send = o => dc && dc.readyState === "open" && dc.send(JSON.stringify(o));
+let lastMove = 0;
+video.addEventListener("mousemove", e => {
+  const n = performance.now(); if (n - lastMove < 30) return; lastMove = n;
+  send({type: "move", ...norm(e)});
+});
+video.addEventListener("mousedown", e => { e.preventDefault(); send({type: "down", button: e.button, ...norm(e)}); });
+video.addEventListener("mouseup", e => send({type: "up", button: e.button, ...norm(e)}));
+video.addEventListener("contextmenu", e => e.preventDefault());
+video.addEventListener("wheel", e => { e.preventDefault(); send({type: "scroll", dy: e.deltaY}); }, {passive: false});
+video.addEventListener("keydown", e => { e.preventDefault(); send({type: "keydown", key: e.key}); });
+video.addEventListener("keyup", e => { e.preventDefault(); send({type: "keyup", key: e.key}); });
+</script>
+</body>
+</html>
