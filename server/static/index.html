@@ -30,6 +30,7 @@
   #screen{display:none;width:100vw;height:100vh;object-fit:contain;background:#000;outline:none}
   #bye{display:none;position:fixed;top:8px;right:8px;z-index:5;opacity:.6;padding:6px 12px;font-size:13px;background:#c0392b}
   #bye:hover{opacity:1}
+  #info{display:none;position:fixed;left:8px;bottom:8px;z-index:5;max-width:min(520px,90vw);background:#000c;color:#fff;padding:8px 12px;border-radius:6px;font-size:13px;line-height:1.4}
 </style>
 </head>
 <body>
@@ -59,6 +60,7 @@
   <div id="err"></div>
 </div>
 <button id="bye">Desconectar</button>
+<div id="info"></div>
 <video id="screen" autoplay playsinline muted tabindex="0"></video>
 <script>
 const $ = s => document.querySelector(s);
@@ -145,10 +147,23 @@ $("#tout").onclick = () => { saveToken(null); showList(false); };
 // ---------- conexão ----------
 $("#go").onclick = () => connect({id: $("#id").value.replace(/\D/g, ""), password: $("#pw").value.trim()});
 
-function connect(join) {
+const info = (msg, ms) => {
+  const el = $("#info");
+  el.textContent = msg || "";
+  el.style.display = msg ? "block" : "none";
+  clearTimeout(info.t);
+  if (msg && ms) info.t = setTimeout(() => el.style.display = "none", ms);
+};
+async function iceServers() {
+  try { return await (await fetch("/api/ice")).json(); }
+  catch { return [{urls: "stun:stun.l.google.com:19302"}]; }
+}
+
+async function connect(join) {
   setErr();
+  const servers = await iceServers();
   ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/viewer`);
-  pc = new RTCPeerConnection({iceServers: [{urls: "stun:stun.l.google.com:19302"}]});
+  pc = new RTCPeerConnection({iceServers: servers});
   dc = pc.createDataChannel("input");
   pc.addTransceiver("video", {direction: "recvonly"});
   pc.ontrack = e => {
@@ -164,6 +179,23 @@ function connect(join) {
     if (m.type === "denied") { setErr("O cliente recusou o acesso"); ws.close(); }
     else if (m.type === "error") { setErr(m.message); }
     else if (m.type === "answer") { await pc.setRemoteDescription({type: "answer", sdp: m.sdp}); }
+  };
+  const thisPc = pc;
+  pc.oniceconnectionstatechange = () => {
+    if (thisPc !== pc) return;
+    const st = pc.iceConnectionState;
+    if (st === "checking" || st === "new") info("Conectando ao computador...");
+    else if (st === "connected" || st === "completed") {
+      info("Conectado. Aguardando a imagem...");
+      setTimeout(() => {
+        if (thisPc !== pc) return;
+        if (video.videoWidth > 0) info("");
+        else info("Conectado, mas sem imagem. Verifique se o computador do cliente está ligado, desbloqueado e com a tela ativa.");
+      }, 6000);
+    }
+    else if (st === "disconnected") info("Conexão instável...");
+    else if (st === "failed")
+      info("⚠ Não foi possível conectar diretamente a este computador (a rede dele bloqueia a conexão). É preciso configurar um servidor TURN.");
   };
   pc.onicegatheringstatechange = () => {
     if (pc.iceGatheringState === "complete")

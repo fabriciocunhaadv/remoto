@@ -3,7 +3,9 @@ Captura a tela, envia por WebRTC e executa mouse/teclado recebidos."""
 import argparse
 import asyncio
 import json
+import logging
 import secrets
+from pathlib import Path
 import time
 
 import aiohttp
@@ -16,6 +18,10 @@ from aiortc import (RTCConfiguration, RTCIceServer, RTCPeerConnection,
                     RTCSessionDescription, VideoStreamTrack)
 from aiortc.codecs import h264, vpx
 from av import VideoFrame
+
+logging.basicConfig(filename=str(Path.home() / ".remotedesk.log"), level=logging.INFO,
+                    format="%(asctime)s %(message)s")
+log_file = logging.getLogger("remotedesk")
 
 pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0
@@ -45,14 +51,25 @@ class ScreenTrack(VideoStreamTrack):
         # captura e conversão rodam numa thread própria (a mss exige a mesma thread)
         self.pool = ThreadPoolExecutor(max_workers=1)
         self.sct = None
+        self.last = None
 
     def _grab(self):
-        if self.sct is None:
-            self.sct = mss.mss()
-        shot = self.sct.grab(self.monitor)
-        arr = np.frombuffer(shot.bgra, dtype=np.uint8).reshape(shot.height, shot.width, 4)
-        frame = VideoFrame.from_ndarray(arr, format="bgra")
-        return frame.reformat(width=self.out_size[0], height=self.out_size[1], format="yuv420p")
+        try:
+            if self.sct is None:
+                self.sct = mss.mss()
+            shot = self.sct.grab(self.monitor)
+            arr = np.frombuffer(shot.bgra, dtype=np.uint8).reshape(shot.height, shot.width, 4)
+            frame = VideoFrame.from_ndarray(arr, format="bgra")
+            self.last = frame.reformat(width=self.out_size[0], height=self.out_size[1], format="yuv420p")
+        except Exception as e:  # tela bloqueada, troca de sessão etc.: não derruba o vídeo
+            log_file.warning("falha ao capturar a tela: %r", e)
+            self.sct = None
+            if self.last is None:
+                black = VideoFrame(*self.out_size, format="yuv420p")
+                for i, plane in enumerate(black.planes):  # Y=0; U,V=128 é preto
+                    plane.update(bytes([0 if i == 0 else 128]) * plane.buffer_size)
+                self.last = black
+        return self.last
 
     async def recv(self):
         pts, time_base = await self.next_timestamp()  # já limita a ~30 fps
@@ -80,13 +97,25 @@ def handle_input(raw, monitor):
             (pyautogui.keyDown if t == "keydown" else pyautogui.keyUp)(key)
 
 
+async def fetch_ice(session, server):
+    """Servidores STUN/TURN configurados no servidor (None se indisponível)."""
+    base = server.replace("wss://", "https://").replace("ws://", "http://")
+    try:
+        async with session.get(f"{base}/api/ice", timeout=aiohttp.ClientTimeout(total=5)) as r:
+            data = await r.json()
+        return [RTCIceServer(x["urls"], x.get("username") or None, x.get("credential") or None) for x in data]
+    except Exception as e:
+        log_file.warning("não foi possível obter /api/ice: %r", e)
+        return None
+
+
 async def run(server, room_id, password, ice, log=print, approve=None, extra=None):
     """extra: campos adicionais do registro (acesso permanente: unattended, name,
     orgKey, deviceSecret; para revogar: só deviceSecret)."""
     pc = None
-    config = RTCConfiguration([RTCIceServer(u) for u in ice])
     try:
         async with aiohttp.ClientSession() as session:
+            config = RTCConfiguration(await fetch_ice(session, server) or [RTCIceServer(u) for u in ice])
             async with session.ws_connect(f"{server}/ws/agent", heartbeat=20) as ws:
                 await ws.send_json({"type": "register", "id": room_id, "password": password, **(extra or {})})
                 log("waiting")
@@ -108,6 +137,11 @@ async def run(server, room_id, password, ice, log=print, approve=None, extra=Non
                             continue
                         log("connected_unattended" if unattended else "connected")
                         pc = RTCPeerConnection(config)
+
+                        @pc.on("iceconnectionstatechange")
+                        def on_ice_state(pc=pc):
+                            log_file.info("ICE: %s", pc.iceConnectionState)
+
                         track = ScreenTrack()
                         pc.addTrack(track)
 

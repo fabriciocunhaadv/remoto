@@ -6,6 +6,7 @@
 //   TECH_PASSWORD  senha do técnico (obrigatória para usar a lista de computadores)
 //   ORG_KEY        código de ativação que o cliente digita para habilitar o acesso permanente
 //   DATA_DIR       pasta onde a lista é salva (padrão: ~/.remotedesk-data)
+//   TURN_URLS, TURN_USERNAME, TURN_CREDENTIAL  servidor TURN opcional (relay quando a conexão direta falha)
 const http = require("http");
 const fs = require("fs");
 const os = require("os");
@@ -90,6 +91,17 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url === "/") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       return fs.createReadStream(INDEX).pipe(res);
+    }
+    if (req.method === "GET" && url === "/api/ice") {
+      const servers = [{ urls: "stun:stun.l.google.com:19302" }];
+      if (process.env.TURN_URLS) {
+        servers.push({
+          urls: process.env.TURN_URLS.split(",").map((u) => u.trim()).filter(Boolean),
+          username: process.env.TURN_USERNAME || "",
+          credential: process.env.TURN_CREDENTIAL || "",
+        });
+      }
+      return json(res, 200, servers);
     }
     if (url === "/health") return res.writeHead(200).end(`ok pid=${process.pid} salas=${rooms.size}`);
 
