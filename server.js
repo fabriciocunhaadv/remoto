@@ -207,7 +207,12 @@ function onViewer(ws) {
       } else if (!r || !eqPassword(r.password, data.password ?? "")) {
         return fail(ws, "ID ou senha inválidos");
       }
-      if (r.viewer) return fail(ws, "Já existe uma sessão ativa");
+      if (r.viewer) {
+        // o técnico autenticado assume a sessão; o acesso avulso continua sendo recusado
+        if (!byToken) return fail(ws, "Já existe uma sessão ativa");
+        send(r.viewer, { type: "error", message: "Sessão assumida por outro acesso do técnico" });
+        r.viewer.close();
+      }
       room = r;
       room.viewer = ws;
       send(room.agent, { type: "viewer-joined", unattended: byToken });
