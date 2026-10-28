@@ -5,53 +5,183 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RemoteDesk</title>
 <style>
+  *{box-sizing:border-box}
   body{margin:0;background:#111;color:#eee;font-family:system-ui,sans-serif}
-  #login{max-width:320px;margin:15vh auto;display:grid;gap:10px;padding:16px}
+  #login{max-width:480px;margin:6vh auto;padding:16px}
+  h2{margin:0 0 14px}
+  .tabs{display:flex;gap:6px;margin-bottom:14px}
+  .tabs button{flex:1;background:#222;color:#aaa}
+  .tabs button.on{background:#2f7df6;color:#fff}
+  .panel{display:none;gap:10px}
+  .panel.on{display:grid}
   input,button{padding:10px;font-size:16px;border-radius:6px;border:0}
   button{background:#2f7df6;color:#fff;cursor:pointer}
-  #err{color:#f66;min-height:1.2em}
+  button:disabled{background:#333;color:#777;cursor:default}
+  button.ghost{background:#2a2a2a;color:#ccc;padding:6px 10px;font-size:13px}
+  #err{color:#f66;min-height:1.2em;margin-top:10px}
+  .row{display:flex;align-items:center;gap:10px;background:#1b1b1b;border-radius:8px;padding:10px 12px}
+  .row .info{flex:1;min-width:0}
+  .row .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .sub{font-size:12px;color:#888}
+  .dot{width:10px;height:10px;border-radius:50%;background:#555;flex:none}
+  .dot.on{background:#3ddc84}
+  .empty{color:#888;font-size:14px;line-height:1.5}
+  .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
   #screen{display:none;width:100vw;height:100vh;object-fit:contain;background:#000;outline:none}
+  #bye{display:none;position:fixed;top:8px;right:8px;z-index:5;opacity:.6;padding:6px 12px;font-size:13px;background:#c0392b}
+  #bye:hover{opacity:1}
 </style>
 </head>
 <body>
 <div id="login">
   <h2>RemoteDesk</h2>
-  <input id="id" placeholder="ID" inputmode="numeric">
-  <input id="pw" placeholder="Senha" type="password">
-  <button id="go">Conectar</button>
+  <div class="tabs">
+    <button id="tab-list" class="on">Meus computadores</button>
+    <button id="tab-guest">Acesso avulso</button>
+  </div>
+
+  <div id="p-list" class="panel on">
+    <div id="auth" class="panel on">
+      <input id="tpw" type="password" placeholder="Senha do técnico">
+      <button id="tlogin">Entrar</button>
+    </div>
+    <div id="comps" class="panel">
+      <div class="top"><span class="sub" style="color:#888">Clique em Conectar</span><button class="ghost" id="tout">Sair</button></div>
+      <div id="items" style="display:grid;gap:8px"></div>
+    </div>
+  </div>
+
+  <div id="p-guest" class="panel">
+    <input id="id" placeholder="ID" inputmode="numeric">
+    <input id="pw" placeholder="Senha" type="password">
+    <button id="go">Conectar</button>
+  </div>
   <div id="err"></div>
 </div>
+<button id="bye">Desconectar</button>
 <video id="screen" autoplay playsinline muted tabindex="0"></video>
 <script>
 const $ = s => document.querySelector(s);
 const video = $("#screen");
-let dc;
+let dc, ws, pc, token = null, listTimer = null;
+try { token = localStorage.getItem("rd_token"); } catch {}
+const saveToken = t => { token = t; try { t ? localStorage.setItem("rd_token", t) : localStorage.removeItem("rd_token"); } catch {} };
+const setErr = m => $("#err").textContent = m || "";
 
-$("#go").onclick = async () => {
-  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/viewer`);
-  const pc = new RTCPeerConnection({iceServers: [{urls: "stun:stun.l.google.com:19302"}]});
+// ---------- abas ----------
+function tab(name) {
+  $("#tab-list").classList.toggle("on", name === "list");
+  $("#tab-guest").classList.toggle("on", name === "guest");
+  $("#p-list").classList.toggle("on", name === "list");
+  $("#p-guest").classList.toggle("on", name === "guest");
+  setErr();
+}
+$("#tab-list").onclick = () => tab("list");
+$("#tab-guest").onclick = () => tab("guest");
+
+// ---------- lista do técnico ----------
+const api = (path, opts = {}) => fetch(path, {
+  ...opts,
+  headers: {"Content-Type": "application/json", ...(token ? {Authorization: "Bearer " + token} : {})},
+});
+
+function showList(on) {
+  $("#auth").classList.toggle("on", !on);
+  $("#comps").classList.toggle("on", on);
+  clearInterval(listTimer);
+  if (on) { loadList(); listTimer = setInterval(loadList, 8000); }
+}
+
+async function loadList() {
+  let r;
+  try { r = await api("/api/computers"); } catch { return setErr("Sem conexão com o servidor"); }
+  if (r.status === 401) { saveToken(null); return showList(false); }
+  const list = await r.json();
+  const box = $("#items");
+  box.textContent = "";
+  if (!list.length) {
+    const e = document.createElement("div");
+    e.className = "empty";
+    e.textContent = "Nenhum computador ainda. No programa do cliente, ative \"Acesso permanente\" e informe o código de ativação.";
+    box.append(e);
+  }
+  for (const c of list) {
+    const row = document.createElement("div"); row.className = "row";
+    const dot = document.createElement("span"); dot.className = "dot" + (c.online ? " on" : "");
+    const info = document.createElement("div"); info.className = "info";
+    const name = document.createElement("div"); name.className = "name"; name.textContent = c.name;
+    const sub = document.createElement("div"); sub.className = "sub";
+    sub.textContent = `ID ${c.id} · ` + (c.online ? "online" : "offline desde " + new Date(c.lastSeen).toLocaleString("pt-BR"));
+    info.append(name, sub);
+    const go = document.createElement("button"); go.textContent = "Conectar"; go.disabled = !c.online;
+    go.onclick = () => connect({id: c.id, token});
+    const ren = document.createElement("button"); ren.className = "ghost"; ren.textContent = "✎"; ren.title = "Renomear";
+    ren.onclick = async () => {
+      const n = prompt("Novo nome:", c.name);
+      if (n && n.trim()) { await api(`/api/computers/${c.id}/rename`, {method: "POST", body: JSON.stringify({name: n.trim()})}); loadList(); }
+    };
+    const del = document.createElement("button"); del.className = "ghost"; del.textContent = "✕"; del.title = "Remover da lista";
+    del.onclick = async () => {
+      if (confirm(`Remover "${c.name}" da lista?`)) { await api(`/api/computers/${c.id}`, {method: "DELETE"}); loadList(); }
+    };
+    row.append(dot, info, go, ren, del);
+    box.append(row);
+  }
+}
+
+$("#tlogin").onclick = async () => {
+  setErr();
+  try {
+    const r = await fetch("/api/login", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({password: $("#tpw").value})});
+    const d = await r.json();
+    if (!r.ok) return setErr(d.error || "Erro ao entrar");
+    saveToken(d.token); $("#tpw").value = ""; showList(true);
+  } catch { setErr("Sem conexão com o servidor"); }
+};
+$("#tpw").addEventListener("keydown", e => e.key === "Enter" && $("#tlogin").click());
+$("#tout").onclick = () => { saveToken(null); showList(false); };
+
+// ---------- conexão ----------
+$("#go").onclick = () => connect({id: $("#id").value.replace(/\D/g, ""), password: $("#pw").value.trim()});
+
+function connect(join) {
+  setErr();
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/viewer`);
+  pc = new RTCPeerConnection({iceServers: [{urls: "stun:stun.l.google.com:19302"}]});
   dc = pc.createDataChannel("input");
   pc.addTransceiver("video", {direction: "recvonly"});
   pc.ontrack = e => {
     video.srcObject = e.streams[0] || new MediaStream([e.track]);
     $("#login").style.display = "none";
     video.style.display = "block";
+    $("#bye").style.display = "block";
     video.focus();
   };
-  ws.onopen = () => ws.send(JSON.stringify({type: "join", id: $("#id").value.replace(/\D/g, ""), password: $("#pw").value.trim()}));
+  ws.onopen = () => ws.send(JSON.stringify({type: "join", ...join}));
   ws.onmessage = async ev => {
     const m = JSON.parse(ev.data);
-    if (m.type === "denied") { $("#err").textContent = "O cliente recusou o acesso"; ws.close(); }
-    else if (m.type === "error") { $("#err").textContent = m.message; }
+    if (m.type === "denied") { setErr("O cliente recusou o acesso"); ws.close(); }
+    else if (m.type === "error") { setErr(m.message); }
     else if (m.type === "answer") { await pc.setRemoteDescription({type: "answer", sdp: m.sdp}); }
   };
   pc.onicegatheringstatechange = () => {
     if (pc.iceGatheringState === "complete")
       ws.send(JSON.stringify({type: "offer", sdp: pc.localDescription.sdp}));
   };
-  await pc.setLocalDescription(await pc.createOffer());
-  ws.onclose = () => { video.style.display = "none"; $("#login").style.display = "grid"; };
-};
+  const mine = ws;
+  ws.onclose = () => {
+    if (mine !== ws) return;
+    video.style.display = "none"; $("#bye").style.display = "none";
+    $("#login").style.display = "block";
+    pc.close();
+    if (token) loadList();
+  };
+  pc.createOffer().then(o => pc.setLocalDescription(o));
+}
+$("#bye").onclick = () => ws && ws.close();
+
+showList(!!token);
 
 // entrada: coordenadas normalizadas (0..1) relativas ao vídeo real, descontando as barras do object-fit
 function norm(e) {

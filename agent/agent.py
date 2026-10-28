@@ -80,47 +80,52 @@ def handle_input(raw, monitor):
             (pyautogui.keyDown if t == "keydown" else pyautogui.keyUp)(key)
 
 
-async def run(server, room_id, password, ice, log=print, approve=None):
+async def run(server, room_id, password, ice, log=print, approve=None, extra=None):
+    """extra: campos adicionais do registro (acesso permanente: unattended, name,
+    orgKey, deviceSecret; para revogar: só deviceSecret)."""
     pc = None
     config = RTCConfiguration([RTCIceServer(u) for u in ice])
-    async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(f"{server}/ws/agent", heartbeat=20) as ws:
-            await ws.send_json({"type": "register", "id": room_id, "password": password})
-            log("waiting")
-            async for msg in ws:
-                data = json.loads(msg.data)
-                t = data["type"]
-                if t in ("viewer-joined", "viewer-left"):
-                    if pc:
-                        await pc.close()
-                        pc = None
-                    if t == "viewer-left":
-                        log("waiting")
-                        continue
-                    if approve and not await approve():
-                        await ws.send_json({"type": "denied"})
-                        continue
-                    log("connected")
-                    pc = RTCPeerConnection(config)
-                    track = ScreenTrack()
-                    pc.addTrack(track)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(f"{server}/ws/agent", heartbeat=20) as ws:
+                await ws.send_json({"type": "register", "id": room_id, "password": password, **(extra or {})})
+                log("waiting")
+                async for msg in ws:
+                    data = json.loads(msg.data)
+                    t = data["type"]
+                    if t == "error":
+                        log(f"Erro: {data.get('message')}")
+                    elif t in ("viewer-joined", "viewer-left"):
+                        if pc:
+                            await pc.close()
+                            pc = None
+                        if t == "viewer-left":
+                            log("waiting")
+                            continue
+                        unattended = bool(data.get("unattended"))
+                        if not unattended and approve and not await approve():
+                            await ws.send_json({"type": "denied"})
+                            continue
+                        log("connected_unattended" if unattended else "connected")
+                        pc = RTCPeerConnection(config)
+                        track = ScreenTrack()
+                        pc.addTrack(track)
 
-                    @pc.on("datachannel")
-                    def on_dc(ch, track=track):
-                        @ch.on("message")
-                        def on_message(m):
-                            try:
-                                handle_input(m, track.monitor)
-                            except Exception as e:
-                                print("input error:", e)
-
-                    @pc.on("icecandidate")
-                    async def on_ice(c):
-                        pass  # aiortc inclui candidatos no SDP da resposta
-                elif t == "offer" and pc:
-                    await pc.setRemoteDescription(RTCSessionDescription(data["sdp"], "offer"))
-                    await pc.setLocalDescription(await pc.createAnswer())
-                    await ws.send_json({"type": "answer", "sdp": pc.localDescription.sdp})
+                        @pc.on("datachannel")
+                        def on_dc(ch, track=track):
+                            @ch.on("message")
+                            def on_message(m):
+                                try:
+                                    handle_input(m, track.monitor)
+                                except Exception as e:
+                                    print("input error:", e)
+                    elif t == "offer" and pc:
+                        await pc.setRemoteDescription(RTCSessionDescription(data["sdp"], "offer"))
+                        await pc.setLocalDescription(await pc.createAnswer())
+                        await ws.send_json({"type": "answer", "sdp": pc.localDescription.sdp})
+    finally:
+        if pc:
+            await pc.close()
 
 
 def main():
