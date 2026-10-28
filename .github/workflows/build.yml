@@ -12,9 +12,9 @@ jobs:
         with: { python-version: "3.11" }
       - run: pip install -r requirements.txt pywebview pyinstaller
       - name: Cliente
-        run: pyinstaller --noconfirm --windowed --name "RemoteDesk-Cliente" --collect-all aiortc --collect-all av --collect-all pyautogui apps/client_app.py
+        run: pyinstaller --noconfirm --windowed --name "RemoteDesk-Cliente" --paths agent --paths apps --hidden-import agent --hidden-import config --collect-all aiortc --collect-all av --collect-all pyautogui apps/client_app.py
       - name: Tecnico
-        run: pyinstaller --noconfirm --windowed --name "RemoteDesk-Tecnico" apps/tech_app.py
+        run: pyinstaller --noconfirm --windowed --name "RemoteDesk-Tecnico" --paths apps --hidden-import config apps/tech_app.py
       - uses: actions/upload-artifact@v4
         with:
           name: RemoteDesk-${{ matrix.os }}
