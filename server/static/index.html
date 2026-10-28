@@ -38,7 +38,7 @@ $("#go").onclick = async () => {
     video.style.display = "block";
     video.focus();
   };
-  ws.onopen = () => ws.send(JSON.stringify({type: "join", id: $("#id").value.trim(), password: $("#pw").value}));
+  ws.onopen = () => ws.send(JSON.stringify({type: "join", id: $("#id").value.replace(/\D/g, ""), password: $("#pw").value.trim()}));
   ws.onmessage = async ev => {
     const m = JSON.parse(ev.data);
     if (m.type === "denied") { $("#err").textContent = "O cliente recusou o acesso"; ws.close(); }
@@ -74,6 +74,50 @@ video.addEventListener("contextmenu", e => e.preventDefault());
 video.addEventListener("wheel", e => { e.preventDefault(); send({type: "scroll", dy: e.deltaY}); }, {passive: false});
 video.addEventListener("keydown", e => { e.preventDefault(); send({type: "keydown", key: e.key}); });
 video.addEventListener("keyup", e => { e.preventDefault(); send({type: "keyup", key: e.key}); });
+
+// toque (celular): dedo move o cursor, toque rápido clica, segurar clica com o botão direito,
+// dois dedos rolam a página
+let tStart = null, tMoved = false, tLong = false, tTimer = null, tMidY = null, tLast = 0;
+video.addEventListener("touchstart", e => {
+  e.preventDefault();
+  clearTimeout(tTimer);
+  if (e.touches.length === 2) {
+    tMoved = true;
+    tMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    return;
+  }
+  const t = e.touches[0];
+  tStart = {x: t.clientX, y: t.clientY}; tMoved = false; tLong = false; tMidY = null;
+  send({type: "move", ...norm(t)});
+  tTimer = setTimeout(() => {
+    if (tMoved) return;
+    tLong = true;
+    send({type: "down", button: 2, ...norm(t)});
+    send({type: "up", button: 2, ...norm(t)});
+  }, 600);
+}, {passive: false});
+video.addEventListener("touchmove", e => {
+  e.preventDefault();
+  if (e.touches.length === 2) {
+    const mid = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    if (tMidY !== null) send({type: "scroll", dy: (tMidY - mid) * 4});
+    tMidY = mid;
+    return;
+  }
+  const t = e.touches[0];
+  if (Math.hypot(t.clientX - tStart.x, t.clientY - tStart.y) > 8) { tMoved = true; clearTimeout(tTimer); }
+  const n = performance.now(); if (n - tLast < 30) return; tLast = n;
+  send({type: "move", ...norm(t)});
+}, {passive: false});
+video.addEventListener("touchend", e => {
+  e.preventDefault();
+  clearTimeout(tTimer);
+  if (!tMoved && !tLong && e.touches.length === 0) {
+    const n = norm(e.changedTouches[0]);
+    send({type: "down", button: 0, ...n});
+    send({type: "up", button: 0, ...n});
+  }
+}, {passive: false});
 </script>
 </body>
 </html>

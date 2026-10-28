@@ -11,8 +11,8 @@ const INDEX = path.join(__dirname, "server", "static", "index.html");
 const rooms = new Map(); // id -> { password, agent, viewer }
 
 const safeEqual = (a, b) => {
-  const ha = crypto.createHash("sha256").update(String(a)).digest();
-  const hb = crypto.createHash("sha256").update(String(b)).digest();
+  const ha = crypto.createHash("sha256").update(String(a).trim().toUpperCase()).digest();
+  const hb = crypto.createHash("sha256").update(String(b).trim().toUpperCase()).digest();
   return crypto.timingSafeEqual(ha, hb);
 };
 const send = (ws, obj) => ws && ws.readyState === 1 && ws.send(JSON.stringify(obj));
@@ -22,7 +22,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     fs.createReadStream(INDEX).pipe(res);
   } else if (req.url === "/health") {
-    res.writeHead(200).end("ok");
+    res.writeHead(200).end(`ok pid=${process.pid} salas=${rooms.size}`);
   } else {
     res.writeHead(404).end("not found");
   }
@@ -73,7 +73,7 @@ function onViewer(ws) {
     let data;
     try { data = JSON.parse(raw); } catch { return; }
     if (data.type === "join" && room === null) {
-      const r = rooms.get(String(data.id));
+      const r = rooms.get(String(data.id).replace(/\D/g, ""));
       if (!r || !safeEqual(r.password, data.password ?? "")) {
         send(ws, { type: "error", message: "ID ou senha inválidos" });
         return ws.close();

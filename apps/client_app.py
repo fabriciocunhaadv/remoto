@@ -30,7 +30,9 @@ root = tk.Tk()
 root.title("RemoteDesk Cliente")
 root.geometry("340x260")
 root.resizable(False, False)
-room_id, password = get_id(), secrets.token_urlsafe(6)
+ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # sem 0/O, 1/I/L
+room_id = get_id()
+password = "".join(secrets.choice(ALPHABET) for _ in range(8))
 status = tk.StringVar(value="Conectando ao servidor...")
 
 tk.Label(root, text="Seu ID", font=("Segoe UI", 10)).pack(pady=(18, 0))
