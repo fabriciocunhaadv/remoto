@@ -24,7 +24,7 @@ ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # sem 0/O, 1/I/L
 STATUS = {
     "waiting": "Aguardando o técnico...",
     "connected": "Técnico conectado",
-    "connected_unattended": "⚠ Técnico conectado (acesso permanente)",
+    "connected_unattended": "Técnico conectado (suporte)",
 }
 
 
@@ -39,7 +39,6 @@ def load_settings():
         except OSError:
             st["id"] = str(secrets.randbelow(900_000_000) + 100_000_000)
     st.setdefault("device_secret", secrets.token_urlsafe(24))
-    st.setdefault("unattended", False)
     st.setdefault("name", platform.node())
     st.setdefault("org_code", "")
     st.setdefault("autostart", False)
@@ -97,22 +96,20 @@ tk.Label(root, text="Senha (acesso avulso)", font=("Segoe UI", 10)).pack(pady=(8
 tk.Label(root, text=password, font=("Consolas", 18, "bold")).pack()
 tk.Label(root, textvariable=status, fg="#2f7df6", wraplength=340).pack(pady=10)
 
-box = tk.LabelFrame(root, text=" Acesso permanente do técnico ", padx=10, pady=8)
+box = tk.LabelFrame(root, text=" Suporte técnico ", padx=10, pady=8)
 box.pack(fill="x", padx=14, pady=4)
-v_unatt = tk.BooleanVar(value=settings["unattended"])
 v_name = tk.StringVar(value=settings["name"])
 v_code = tk.StringVar(value=settings["org_code"])
 v_auto = tk.BooleanVar(value=settings["autostart"])
-tk.Checkbutton(box, text="Permitir que o técnico acesse este\ncomputador SEM pedir autorização",
-               variable=v_unatt, justify="left").pack(anchor="w")
-tk.Label(box, text="Nome deste computador:").pack(anchor="w", pady=(6, 0))
+tk.Label(box, text="Nome deste computador:").pack(anchor="w")
 tk.Entry(box, textvariable=v_name).pack(fill="x")
 tk.Label(box, text="Código de ativação (fornecido pelo técnico):").pack(anchor="w", pady=(6, 0))
 tk.Entry(box, textvariable=v_code, show="*").pack(fill="x")
 if sys.platform == "win32":
     tk.Checkbutton(box, text="Iniciar com o Windows", variable=v_auto).pack(anchor="w", pady=(6, 0))
-tk.Label(box, text="Você pode desativar a qualquer momento.\nSempre que o técnico conectar, este programa avisa.",
-         fg="#666", font=("Segoe UI", 8), justify="left").pack(anchor="w", pady=(6, 0))
+tk.Label(box, text="Ao informar o código, este computador fica vinculado ao suporte técnico.\n"
+                   "Você é avisado sempre que o técnico conectar.",
+         fg="#666", font=("Segoe UI", 8), justify="left", wraplength=330).pack(anchor="w", pady=(6, 0))
 
 # ---------- bandeja do sistema: o X só esconde a janela; o acesso continua ativo ----------
 tray = None
@@ -164,14 +161,11 @@ current = {"task": None}
 
 
 def apply_settings():
-    if v_unatt.get() and not v_code.get().strip():
-        messagebox.showwarning("Código de ativação", "Digite o código de ativação fornecido pelo técnico.")
-        return
-    settings.update(unattended=v_unatt.get(), name=v_name.get().strip() or platform.node(),
+    settings.update(name=v_name.get().strip() or platform.node(),
                     org_code=v_code.get().strip(), autostart=v_auto.get())
     save_settings()
     try:
-        set_autostart(settings["autostart"] and settings["unattended"])
+        set_autostart(settings["autostart"])
     except OSError as e:
         messagebox.showwarning("Iniciar com o Windows", f"Não foi possível configurar: {e}")
     status.set("Aplicando...")
@@ -199,10 +193,10 @@ def log(ev):
 
 
 def register_extra():
-    if settings["unattended"]:
+    if settings["org_code"]:  # com o código de ativação, o computador entra na lista do técnico
         return {"unattended": True, "name": settings["name"], "orgKey": settings["org_code"],
                 "deviceSecret": settings["device_secret"]}
-    return {"deviceSecret": settings["device_secret"]}  # revoga um acesso permanente antigo
+    return {"deviceSecret": settings["device_secret"]}  # sem código: remove este computador da lista do técnico
 
 
 async def main_loop():
