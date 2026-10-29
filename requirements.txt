@@ -3,3 +3,6 @@ aiortc>=1.9
 mss>=9.0
 pyautogui>=0.9.54
 numpy>=1.26
+pyperclip>=1.8
+pystray>=0.19
+Pillow>=10.0

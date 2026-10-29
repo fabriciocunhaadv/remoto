@@ -159,14 +159,20 @@ async function iceServers() {
   catch { return [{urls: "stun:stun.l.google.com:19302"}]; }
 }
 
-async function connect(join) {
-  setErr();
+let session = null; // { join, closedByUser, everConnected }
+
+async function connect(join, existing) {
+  const s = session = existing || {join, closedByUser: false, everConnected: false};
+  if (!existing) setErr();
   const servers = await iceServers();
-  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/viewer`);
-  pc = new RTCPeerConnection({iceServers: servers});
+  if (session !== s || s.closedByUser) return;
+  const mine = ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/viewer`);
+  const myPc = pc = new RTCPeerConnection({iceServers: servers});
   dc = pc.createDataChannel("input");
+  dc.onmessage = onRemoteMessage;
   pc.addTransceiver("video", {direction: "recvonly"});
   pc.ontrack = e => {
+    s.everConnected = true;
     video.srcObject = e.streams[0] || new MediaStream([e.track]);
     $("#login").style.display = "none";
     video.style.display = "block";
@@ -177,27 +183,33 @@ async function connect(join) {
   ws.onopen = () => ws.send(JSON.stringify({type: "join", ...join}));
   ws.onmessage = async ev => {
     const m = JSON.parse(ev.data);
-    if (m.type === "denied") { setErr("O cliente recusou o acesso"); ws.close(); }
-    else if (m.type === "error") { setErr(m.message); }
+    if (m.type === "denied") { s.closedByUser = true; setErr("O cliente recusou o acesso"); ws.close(); }
+    else if (m.type === "error") {
+      if (/expirada/.test(m.message)) s.closedByUser = true;  // sessão do técnico inválida: não adianta tentar de novo
+      if (!s.everConnected) s.closedByUser = true;            // primeira tentativa falhou: volta ao login
+      setErr(m.message);
+      if (s.everConnected && !s.closedByUser) info(m.message + ". Tentando novamente...");
+    }
     else if (m.type === "answer") { await pc.setRemoteDescription({type: "answer", sdp: m.sdp}); }
   };
-  const thisPc = pc;
+  let dropTimer = null;
   pc.oniceconnectionstatechange = () => {
-    if (thisPc !== pc) return;
+    if (myPc !== pc) return;
     const st = pc.iceConnectionState;
+    clearTimeout(dropTimer);
     if (st === "checking" || st === "new") info("Conectando ao computador...");
     else if (st === "connected" || st === "completed") {
       info("Conectado. Aguardando a imagem...");
       setTimeout(() => {
-        if (thisPc !== pc) return;
+        if (myPc !== pc) return;
         if (video.videoWidth > 0) return info("");
         pc.getStats().then(stats => {
           let pk = 0, dec = 0, codec = "?";
           const codecs = {};
-          stats.forEach(s => { if (s.type === "codec") codecs[s.id] = s.mimeType; });
-          stats.forEach(s => {
-            if (s.type === "inbound-rtp" && s.kind === "video") {
-              pk = s.packetsReceived || 0; dec = s.framesDecoded || 0; codec = codecs[s.codecId] || "?";
+          stats.forEach(x => { if (x.type === "codec") codecs[x.id] = x.mimeType; });
+          stats.forEach(x => {
+            if (x.type === "inbound-rtp" && x.kind === "video") {
+              pk = x.packetsReceived || 0; dec = x.framesDecoded || 0; codec = codecs[x.codecId] || "?";
             }
           });
           info(`Conectado, mas sem imagem. Pacotes recebidos: ${pk} · quadros decodificados: ${dec} · codec: ${codec}. ` +
@@ -205,25 +217,35 @@ async function connect(join) {
         });
       }, 6000);
     }
-    else if (st === "disconnected") info("Conexão instável...");
-    else if (st === "failed")
-      info("⚠ Não foi possível conectar diretamente a este computador (a rede dele bloqueia a conexão). É preciso configurar um servidor TURN.");
+    else if (st === "disconnected") {
+      info("Conexão instável...");
+      dropTimer = setTimeout(() => ws.close(), 10000);  // não voltou: reinicia a sessão
+    }
+    else if (st === "failed") {
+      if (s.everConnected) ws.close();
+      else info("⚠ Não foi possível conectar diretamente a este computador (a rede dele bloqueia a conexão). É preciso configurar um servidor TURN.");
+    }
   };
   pc.onicegatheringstatechange = () => {
-    if (pc.iceGatheringState === "complete")
+    if (pc.iceGatheringState === "complete" && ws.readyState === 1)
       ws.send(JSON.stringify({type: "offer", sdp: pc.localDescription.sdp}));
   };
-  const mine = ws;
   ws.onclose = () => {
     if (mine !== ws) return;
-    video.style.display = "none"; $("#bye").style.display = "none";
+    myPc.close();
+    if (session === s && s.everConnected && !s.closedByUser) {
+      info("Conexão perdida. Reconectando...");   // mantém a última imagem na tela e tenta de novo, sem limite
+      setTimeout(() => connect(join, s), 2500);
+      return;
+    }
+    session = null;
+    video.style.display = "none"; $("#bye").style.display = "none"; info("");
     $("#login").style.display = "block";
-    pc.close();
     if (token) loadList();
   };
   pc.createOffer().then(o => pc.setLocalDescription(o));
 }
-$("#bye").onclick = () => ws && ws.close();
+$("#bye").onclick = () => { if (session) session.closedByUser = true; ws && ws.close(); };
 
 showList(!!token);
 
@@ -247,8 +269,46 @@ video.addEventListener("mousedown", e => { e.preventDefault(); send({type: "down
 video.addEventListener("mouseup", e => send({type: "up", button: e.button, ...norm(e)}));
 video.addEventListener("contextmenu", e => e.preventDefault());
 video.addEventListener("wheel", e => { e.preventDefault(); send({type: "scroll", dy: e.deltaY}); }, {passive: false});
-video.addEventListener("keydown", e => { e.preventDefault(); send({type: "keydown", key: e.key}); });
-video.addEventListener("keyup", e => { e.preventDefault(); send({type: "keyup", key: e.key}); });
+// Cmd (Mac) funciona como Ctrl no computador remoto
+const keyName = e => e.key === "Meta" ? "Control" : e.key;
+const isPasteKey = e => (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v";
+video.addEventListener("mousedown", () => video.focus());
+video.addEventListener("keydown", e => {
+  if (isPasteKey(e)) return;                       // o navegador dispara o evento "paste" (abaixo)
+  e.preventDefault();
+  send({type: "keydown", key: keyName(e)});
+  // no Mac o navegador não envia keyup das teclas soltas enquanto Cmd está pressionado
+  if (e.metaKey && e.key !== "Meta") send({type: "keyup", key: keyName(e)});
+});
+video.addEventListener("keyup", e => {
+  if (isPasteKey(e)) return;
+  e.preventDefault();
+  if (e.metaKey && e.key !== "Meta") return;
+  send({type: "keyup", key: keyName(e)});
+});
+
+// colar: o texto do SEU computador vai para a área de transferência do remoto e recebe Ctrl+V
+document.addEventListener("paste", e => {
+  if (video.style.display !== "block") return;
+  e.preventDefault();
+  const text = e.clipboardData && e.clipboardData.getData("text/plain");
+  if (text) send({type: "paste", text});
+});
+
+// copiar: depois do Ctrl+C no remoto, o texto chega aqui e vai para a SUA área de transferência
+let pendingClip = null;
+function onRemoteMessage(ev) {
+  let m; try { m = JSON.parse(ev.data); } catch { return; }
+  if (m.type !== "clipboard") return;
+  navigator.clipboard.writeText(m.text).then(
+    () => info("Texto copiado do computador remoto", 2500),
+    () => { pendingClip = m.text; info("Clique na tela para concluir a cópia", 4000); });
+}
+video.addEventListener("click", () => {
+  if (pendingClip === null) return;
+  const t = pendingClip; pendingClip = null;
+  navigator.clipboard.writeText(t).then(() => info("Texto copiado do computador remoto", 2500)).catch(() => {});
+});
 
 // toque (celular): dedo move o cursor, toque rápido clica, segurar clica com o botão direito,
 // dois dedos rolam a página

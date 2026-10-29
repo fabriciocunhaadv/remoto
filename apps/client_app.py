@@ -3,6 +3,7 @@ Opcionalmente, o cliente habilita o acesso permanente para o técnico."""
 import asyncio
 import concurrent.futures
 import json
+import os
 import platform
 import secrets
 import sys
@@ -57,13 +58,27 @@ def set_autostart(enabled):
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                         r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as k:
         if enabled:
-            winreg.SetValueEx(k, "RemoteDeskCliente", 0, winreg.REG_SZ, f'"{sys.executable}"')
+            winreg.SetValueEx(k, "RemoteDeskCliente", 0, winreg.REG_SZ, f'"{sys.executable}" --minimized')
         else:
             try:
                 winreg.DeleteValue(k, "RemoteDeskCliente")
             except FileNotFoundError:
                 pass
 
+
+def already_running():
+    """Impede duas cópias (duas conexões com o mesmo ID). Só no Windows."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    ctypes.windll.kernel32.CreateMutexW(None, False, "RemoteDeskCliente-single-instance")
+    return ctypes.windll.kernel32.GetLastError() == 183  # ERROR_ALREADY_EXISTS
+
+
+if already_running():
+    tk.Tk().withdraw()
+    messagebox.showinfo("RemoteDesk", "O RemoteDesk já está em execução.\nProcure o ícone perto do relógio (bandeja).")
+    sys.exit(0)
 
 settings = load_settings()
 save_settings()
@@ -99,6 +114,51 @@ if sys.platform == "win32":
 tk.Label(box, text="Você pode desativar a qualquer momento.\nSempre que o técnico conectar, este programa avisa.",
          fg="#666", font=("Segoe UI", 8), justify="left").pack(anchor="w", pady=(6, 0))
 
+# ---------- bandeja do sistema: o X só esconde a janela; o acesso continua ativo ----------
+tray = None
+
+
+def show_window():
+    root.deiconify()
+    root.lift()
+    root.focus_force()
+
+
+def quit_app():
+    if messagebox.askyesno("Encerrar RemoteDesk",
+                           "Se encerrar, o técnico não conseguirá mais acessar este computador.\nEncerrar mesmo assim?"):
+        if tray:
+            tray.stop()
+        os._exit(0)  # encerra tudo, inclusive a thread do agente
+
+
+def hide_window():
+    root.withdraw() if tray else root.iconify()  # sem bandeja (ex.: Mac): minimiza para o Dock
+
+
+def make_tray():
+    if sys.platform != "win32":
+        return None  # no Mac a bandeja exige a thread principal, ocupada pelo Tk
+    try:
+        import pystray
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return None
+    img = Image.new("RGB", (64, 64), "#2f7df6")
+    ImageDraw.Draw(img).ellipse((16, 16, 48, 48), fill="white")
+    menu = pystray.Menu(
+        pystray.MenuItem("Abrir", lambda: root.after(0, show_window), default=True),
+        pystray.MenuItem("Encerrar", lambda: root.after(0, quit_app)))
+    icon = pystray.Icon("RemoteDesk", img, "RemoteDesk Cliente", menu)
+    icon.run_detached()
+    return icon
+
+
+tray = make_tray()
+root.protocol("WM_DELETE_WINDOW", hide_window)
+if "--minimized" in sys.argv:
+    root.after(100, hide_window)
+
 loop = asyncio.new_event_loop()
 current = {"task": None}
 
@@ -131,6 +191,11 @@ async def approve():
 
 def log(ev):
     root.after(0, lambda: status.set(STATUS.get(ev, ev)))
+    if ev == "connected_unattended" and tray:
+        try:
+            tray.notify("Um técnico conectou a este computador.", "RemoteDesk")
+        except Exception:
+            pass
 
 
 def register_extra():
@@ -154,5 +219,6 @@ async def main_loop():
         await asyncio.sleep(5)
 
 
-threading.Thread(target=lambda: loop.run_until_complete(main_loop()), daemon=True).start()
+# a conexão só começa com a janela já em funcionamento (o Tk não aceita chamadas de outras threads antes disso)
+root.after(200, lambda: threading.Thread(target=lambda: loop.run_until_complete(main_loop()), daemon=True).start())
 root.mainloop()

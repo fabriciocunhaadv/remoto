@@ -20,7 +20,7 @@ const ORG_KEY = process.env.ORG_KEY || "";
 const DATA_DIR = process.env.DATA_DIR || path.join(os.homedir(), ".remotedesk-data");
 const DB_FILE = path.join(DATA_DIR, "computers.json");
 const INDEX = path.join(__dirname, "server", "static", "index.html");
-const TOKEN_TTL = 30 * 24 * 3600 * 1000;
+const TOKEN_TTL = 5 * 365 * 24 * 3600 * 1000; // o técnico fica logado até clicar em Sair
 
 const rooms = new Map(); // id -> { password, agent, viewer, unattended }
 
